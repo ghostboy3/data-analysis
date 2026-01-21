@@ -87,7 +87,7 @@ except Exception as e:
   }
 }
 
-async function executePythonCode(code: string, filePath: string): Promise<{ image?: string; output?: string; error?: string }> {
+async function executePythonCode(code: string, filePaths: string[]): Promise<{ image?: string; output?: string; error?: string }> {
   try {
     // Create temp directory for Python execution
     const tempDir = join(process.cwd(), 'temp')
@@ -101,8 +101,22 @@ async function executePythonCode(code: string, filePath: string): Promise<{ imag
     const outputPath = join(tempDir, `output_${scriptId}.png`)
 
     // Escape file paths for Python
-    const escapedFilePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    const escapedFilePaths = filePaths.map(fp => fp.replace(/\\/g, '\\\\').replace(/"/g, '\\"'))
     const escapedOutputPath = outputPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+
+    // Helper function to read a file based on extension
+    const readFileCode = `
+def read_data_file(file_path):
+    """Helper function to read data files based on extension"""
+    if file_path.endswith('.csv'):
+        return pd.read_csv(file_path)
+    elif file_path.endswith('.xlsx') or file_path.endswith('.xls'):
+        return pd.read_excel(file_path)
+    elif file_path.endswith('.json'):
+        return pd.read_json(file_path)
+    else:
+        return pd.read_csv(file_path)
+`
 
     // Wrap the user code to capture plots
     const wrappedCode = `import pandas as pd
@@ -128,18 +142,21 @@ except:
     plt.style.use('seaborn-darkgrid')
 sns.set_palette("husl")
 
-# Read the data file
-file_path = r"${escapedFilePath}"
+# File paths list
+file_paths = [${escapedFilePaths.map(fp => `r"${fp}"`).join(', ')}]
+
+${readFileCode}
 
 try:
-    if file_path.endswith('.csv'):
-        df = pd.read_csv(file_path)
-    elif file_path.endswith('.xlsx') or file_path.endswith('.xls'):
-        df = pd.read_excel(file_path)
-    elif file_path.endswith('.json'):
-        df = pd.read_json(file_path)
-    else:
-        df = pd.read_csv(file_path)
+    # Read all files into dataframes
+    ${filePaths.length === 1 
+      ? `df = read_data_file(file_paths[0])`
+      : `dfs = [read_data_file(fp) for fp in file_paths]
+    # For convenience, assign first dataframe to 'df' if only one file is used
+    df = dfs[0] if len(dfs) == 1 else dfs
+    # Also available as df1, df2, etc. for multiple files
+${filePaths.map((_, i) => `    df${i + 1} = dfs[${i}]`).join('\n')}`
+    }
     
     # User's code
 ${code.split('\n').map(line => '    ' + line).join('\n')}
@@ -199,11 +216,11 @@ except Exception as e:
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, filePath, fileName } = await request.json()
+    const { message, files } = await request.json()
 
-    if (!message || !filePath) {
+    if (!message || !files || !Array.isArray(files) || files.length === 0) {
       return NextResponse.json(
-        { error: 'Message and file path are required' },
+        { error: 'Message and at least one file are required' },
         { status: 400 }
       )
     }
@@ -215,26 +232,41 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get file schema
-    const fileSchema = await getFileSchema(filePath)
+    // Get file schemas for all files
+    const fileSchemas = await Promise.all(
+      files.map((f: { path: string; name: string }) => getFileSchema(f.path))
+    )
+
+    const fileNames = files.map((f: { path: string; name: string }) => f.name).join(', ')
+    const fileSchemasText = files.map((f: { path: string; name: string }, i: number) => 
+      `File ${i + 1}: ${f.name}\n${fileSchemas[i]}`
+    ).join('\n\n')
 
     // Create prompt for OpenAI
     const systemPrompt = `You are a data analysis assistant. Your job is to generate Python code that analyzes data files and creates visualizations.
 
 Rules:
-1. Always use pandas to read the file (pd.read_csv, pd.read_excel, or pd.read_json)
+1. Always use pandas to read files (pd.read_csv, pd.read_excel, or pd.read_json)
 2. Use matplotlib or seaborn for visualizations
 3. Make sure to create clear, informative plots
 4. Use appropriate plot types (histogram, scatter, line, bar, etc.) based on the request
 5. Always include labels, titles, and legends
-6. The file path is already loaded in variable 'file_path' - use it to read the data
-7. Return ONLY the Python code, no explanations or markdown formatting
-8. Import all necessary libraries at the top
-9. Handle errors gracefully
+6. For multiple files, you can merge, join, or compare datasets using pandas operations like pd.merge(), pd.concat(), etc.
+7. When multiple files are uploaded:
+   - DataFrames are available as df1, df2, df3, etc. (one per file)
+   - All DataFrames are also in a list called 'dfs'
+   - For single file operations, use 'df' (which points to the first file)
+8. Examples:
+   - Single file: Use 'df' directly
+   - Merge two files: merged = pd.merge(df1, df2, on='common_column')
+   - Concatenate: combined = pd.concat([df1, df2])
+9. Return ONLY the Python code, no explanations or markdown formatting
+10. Import all necessary libraries at the top
+11. Handle errors gracefully
 
-The user has uploaded a file: ${fileName}
-File schema/preview:
-${fileSchema}
+The user has uploaded ${files.length} file(s): ${fileNames}
+File schemas/previews:
+${fileSchemasText}
 
 Generate Python code that will: ${message}`
 
@@ -262,8 +294,9 @@ Generate Python code that will: ${message}`
     cleanCode = cleanCode.replace(/plt\.show\(\)/g, '# plt.show() # Removed: using non-interactive backend')
     cleanCode = cleanCode.replace(/plt\.show\(.*?\)/g, '# plt.show() # Removed: using non-interactive backend')
 
-    // Execute the Python code
-    const executionResult = await executePythonCode(cleanCode, filePath)
+    // Execute the Python code with all file paths
+    const filePaths = files.map((f: { path: string; name: string }) => f.path)
+    const executionResult = await executePythonCode(cleanCode, filePaths)
 
     // Generate a natural language response
     const responsePrompt = `Based on the user's request "${message}" and the analysis performed, provide a brief, clear explanation of what was done. Keep it concise (2-3 sentences).`

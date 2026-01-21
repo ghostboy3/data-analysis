@@ -3,8 +3,13 @@
 import { useState, useRef, useEffect } from 'react'
 import Message from './Message'
 
+interface FileInfo {
+  name: string
+  path: string
+}
+
 interface ChatInterfaceProps {
-  uploadedFile: { name: string; path: string } | null
+  uploadedFiles: FileInfo[]
 }
 
 interface Message {
@@ -16,7 +21,7 @@ interface Message {
   error?: string
 }
 
-export default function ChatInterface({ uploadedFile }: ChatInterfaceProps) {
+export default function ChatInterface({ uploadedFiles }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -34,8 +39,8 @@ export default function ChatInterface({ uploadedFile }: ChatInterfaceProps) {
     e.preventDefault()
     if (!input.trim() || loading) return
 
-    if (!uploadedFile) {
-      alert('Please upload a file first')
+    if (uploadedFiles.length === 0) {
+      alert('Please upload at least one file first')
       return
     }
 
@@ -57,8 +62,7 @@ export default function ChatInterface({ uploadedFile }: ChatInterfaceProps) {
         },
         body: JSON.stringify({
           message: input,
-          filePath: uploadedFile.path,
-          fileName: uploadedFile.name,
+          files: uploadedFiles.map(f => ({ path: f.path, name: f.name })),
         }),
       })
 
@@ -97,8 +101,8 @@ export default function ChatInterface({ uploadedFile }: ChatInterfaceProps) {
         {messages.length === 0 ? (
           <div className="text-center text-gray-500 mt-8">
             <p className="text-lg mb-2">👋 Welcome to AI Data Analysis!</p>
-            <p>Upload a file and ask questions about your data.</p>
-            <p className="mt-2 text-sm">Try: "Show me a summary of the data" or "Create a histogram of column X"</p>
+            <p>Upload one or more files and ask questions about your data.</p>
+            <p className="mt-2 text-sm">Try: "Show me a summary of the data", "Create a histogram of column X", or "Merge and compare these datasets"</p>
           </div>
         ) : (
           messages.map((message) => (
@@ -120,13 +124,13 @@ export default function ChatInterface({ uploadedFile }: ChatInterfaceProps) {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={uploadedFile ? "Ask a question about your data..." : "Upload a file first..."}
-            disabled={!uploadedFile || loading}
+            placeholder={uploadedFiles.length > 0 ? `Ask a question about your ${uploadedFiles.length} file(s)...` : "Upload file(s) first..."}
+            disabled={uploadedFiles.length === 0 || loading}
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100"
           />
           <button
             type="submit"
-            disabled={!uploadedFile || loading || !input.trim()}
+            disabled={uploadedFiles.length === 0 || loading || !input.trim()}
             className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition"
           >
             Send
